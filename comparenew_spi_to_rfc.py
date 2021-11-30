@@ -118,14 +118,14 @@ def generate_report(ws_rfc, ws_old_spi, ws_new_spi):
     if rfc_dump == spi_delta:
         success = True
         st.balloons()
-        report.append('# Success!!')
-        report.append('## RFC items were transferred to new SPI')
+        report.append('### Success!!')
+        report.append('#### RFC items were transferred to new SPI')
         print('rfc items successfully transfered to new SPI')
     else:
         success = False
         print('this rfc package is incorrect\nthe following items need attention:')
-        report.append('# This rfc package is incorrect !')
-        report.append('## The following items need attention:')
+        report.append('### This rfc package is incorrect !')
+        report.append('#### The following items need attention:')
         if len(rfc_dump) != len(spi_delta): 
             report.append('- number of items in rfc don\'t match new spi')
             print('- number of items in rfc don\'t match new spi')
@@ -161,21 +161,21 @@ def generate_report(ws_rfc, ws_old_spi, ws_new_spi):
     
     return report, success
 st.write('# PRP Change Order Package Checker')
-st.write('''## This tool makes sure all items \
+st.write('''### This tool makes sure all items \
 in the Change Order were successfully transferred to the new SPI''')
 
-st.write('### Step 1. Upload the Excel version of the RFC')
+st.write('#### Step 1. Upload the Excel version of the RFC')
 rfc = st.file_uploader("upload your rfc here",type='xlsm')
 if rfc != None:
     wb_rfc = openpyxl.load_workbook(rfc, read_only=True, data_only=True)
     ws_rfc = wb_rfc['RFC']
-st.write('### Step 2. Upload the most recent approved SPI')
+st.write('#### Step 2. Upload the most recent approved SPI')
 
 old_spi = st.file_uploader("Old SPI (the one you got from MFMP)",type='xlsm')
 if old_spi != None:
     wb_old_spi = openpyxl.load_workbook(old_spi, read_only=True, data_only=True)
     ws_old_spi = wb_old_spi['SOW Units']
-st.write('### Step 3. Upload the New SPI')
+st.write('#### Step 3. Upload the New SPI')
 new_spi = st.file_uploader("NEW SPI (The one you generated from the RFC)",type='xlsm')
 if new_spi != None:
     wb_new_spi = openpyxl.load_workbook(new_spi, read_only=True, data_only=True)
