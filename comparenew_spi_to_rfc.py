@@ -160,26 +160,29 @@ def generate_report(ws_rfc, ws_old_spi, ws_new_spi):
 
     
     return report, success
+
 st.write('# PRP Change Order Package Checker')
 st.write('''### This tool makes sure all items \
 in the Change Order were successfully transferred to the new SPI''')
-
-st.write('#### Step 1. Upload the Excel version of the RFC')
-rfc = st.file_uploader("upload your rfc here",type='xlsm')
-if rfc != None:
-    wb_rfc = openpyxl.load_workbook(rfc, read_only=True, data_only=True)
-    ws_rfc = wb_rfc['RFC']
-st.write('#### Step 2. Upload the most recent approved SPI')
-
-old_spi = st.file_uploader("Old SPI (the one you got from MFMP)",type='xlsm')
-if old_spi != None:
-    wb_old_spi = openpyxl.load_workbook(old_spi, read_only=True, data_only=True)
-    ws_old_spi = wb_old_spi['SOW Units']
-st.write('#### Step 3. Upload the New SPI')
-new_spi = st.file_uploader("NEW SPI (The one you generated from the RFC)",type='xlsm')
-if new_spi != None:
-    wb_new_spi = openpyxl.load_workbook(new_spi, read_only=True, data_only=True)
-    ws_new_spi = wb_new_spi['SOW Units']
+col1, col2, col3 = st.columns(3)
+with col1:
+    st.write('### Step 1.')
+    rfc = st.file_uploader("upload your Excel RFC here",type='xlsm')
+    if rfc != None:
+        wb_rfc = openpyxl.load_workbook(rfc, read_only=True, data_only=True)
+        ws_rfc = wb_rfc['RFC']
+with col2:
+    st.write('### Step 2.')
+    old_spi = st.file_uploader("Upload Old SPI (the one you got from MFMP)",type='xlsm')
+    if old_spi != None:
+        wb_old_spi = openpyxl.load_workbook(old_spi, read_only=True, data_only=True)
+        ws_old_spi = wb_old_spi['SOW Units']
+with col3:
+    st.write('### Step 3.')
+    new_spi = st.file_uploader("Upload newly generated SPI",type='xlsm')
+    if new_spi != None:
+        wb_new_spi = openpyxl.load_workbook(new_spi, read_only=True, data_only=True)
+        ws_new_spi = wb_new_spi['SOW Units']
 
 
 try:
@@ -189,9 +192,9 @@ try:
     wb_new_spi.close()
     report = '  \n'.join(report)
     if success == True:
-        st.image('https://www.nicepng.com/png/full/362-3624869_success-image-png.png',width=240,)
+        st.image('https://www.nicepng.com/png/full/362-3624869_success-image-png.png',width=100,)
     else:
-        st.image('https://purepng.com/public/uploads/large/purepng.com-sign-stoptraffic-signsign-stopnotify-driversstop-signs-1701527614263a3116.png',width=240)
+        st.image('https://purepng.com/public/uploads/large/purepng.com-sign-stoptraffic-signsign-stopnotify-driversstop-signs-1701527614263a3116.png',width=100)
 
     st.write(report)
     
