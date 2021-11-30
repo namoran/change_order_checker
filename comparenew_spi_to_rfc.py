@@ -173,7 +173,7 @@ with col1:
         ws_rfc = wb_rfc['RFC']
 with col2:
     st.write('### Step 2.')
-    old_spi = st.file_uploader("Upload Old SPI (the one you got from MFMP)",type='xlsm')
+    old_spi = st.file_uploader("Upload Old SPI",type='xlsm')
     if old_spi != None:
         wb_old_spi = openpyxl.load_workbook(old_spi, read_only=True, data_only=True)
         ws_old_spi = wb_old_spi['SOW Units']
