@@ -167,7 +167,7 @@ in the Change Order were successfully transferred to the new SPI''')
 col1, col2, col3 = st.columns(3)
 with col1:
     st.write('### Step 1.')
-    rfc = st.file_uploader("upload your Excel RFC here",type='xlsm')
+    rfc = st.file_uploader("Upload your Excel RFC here",type='xlsm')
     if rfc != None:
         wb_rfc = openpyxl.load_workbook(rfc, read_only=True, data_only=True)
         ws_rfc = wb_rfc['RFC']
