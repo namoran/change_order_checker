@@ -98,13 +98,16 @@ def get_spi_diff(old_spi_sow, new_spi_sow):
         for j, (cell_old, cell_new) in enumerate(zip(row_old, row_new)):
 
             if cell_old.value != cell_new.value:
-
+                print (cell_old.value, cell_new.value)
                 tsk = tasks[j]
                 pi = pay_items[i]
                 old_val = cell_old.value if cell_old.value != None else 0
+                print(old_val)
                 new_val = cell_new.value if cell_new.value != None else 0
+                print(new_val)
                 delta = new_val - old_val
-                lol.append((str(tsk), pi, new_val))
+                print(delta)
+                lol.append((str(tsk), pi, delta))
                 lol.sort()
                 lol.sort(key=sort_by_pi)
     return lol
@@ -113,8 +116,8 @@ def generate_report(ws_rfc, ws_old_spi, ws_new_spi):
     report = []
     rfc_dump = load_rfc(ws_rfc)
     spi_delta = get_spi_diff(ws_old_spi, ws_new_spi)
-    #print(rfc_dump)
-    #print(spi_delta) uncomment for debugging
+    print("rfc items: ",  rfc_dump)
+    print("diiference between old and new spis: ", spi_delta) 
     if rfc_dump == spi_delta:
         success = True
         st.balloons()
