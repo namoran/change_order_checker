@@ -80,7 +80,7 @@ def load_rfc(rfc_worksheet):
     each tuple includes tsk, pi, uom, pi_price, new_val, total_price'''
     lol = []
     for row_file1 in rfc_worksheet.iter_rows(min_row=12, max_row=111, min_col=0,max_col=9, values_only=True):
-        if row_file1[0] != None or row_file1[0] !=0:
+        if (row_file1[0] != None) or (row_file1[0] !=0):
             tsk, pi, desc,_,_, uom, pi_price, new_val, total_price = row_file1
             lol.append(('TASK '+str(tsk), pi, new_val))
             lol.sort()
