@@ -186,7 +186,6 @@ with col3:
     if new_spi != None:
         wb_new_spi = openpyxl.load_workbook(new_spi, read_only=True, data_only=True)
         ws_new_spi = wb_new_spi['SOW Units']
-st.caption('''This tool is authored by Nicholas Moran PG at [Moran.Rocks](https://Moran.Rocks)''')
 
 try:
     report, success = generate_report(ws_rfc, ws_old_spi, ws_new_spi)
@@ -203,7 +202,8 @@ try:
     
 except:
     st.write('Upload your files to process')
-
+finally:
+    st.caption('''This tool is authored by Nicholas Moran PG at [Moran.Rocks](https://Moran.Rocks)''')
 
 
 
