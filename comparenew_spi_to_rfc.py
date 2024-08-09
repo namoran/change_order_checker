@@ -102,11 +102,9 @@ def get_spi_diff(old_spi_sow, new_spi_sow):
                 tsk = tasks[j]
                 pi = pay_items[i]
                 old_val = cell_old.value if cell_old.value != None else 0
-                print(old_val)
-                new_val = cell_new.value if cell_new.value != None else 0
-                print(new_val)
+                new_val = cell_new.value if cell_new.value != None else 0                
                 delta = new_val - old_val
-                print(delta)
+                print(old_val, new_val, delta)
                 lol.append((str(tsk), pi, delta))
                 lol.sort()
                 lol.sort(key=sort_by_pi)
