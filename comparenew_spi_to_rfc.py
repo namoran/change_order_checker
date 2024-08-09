@@ -96,13 +96,13 @@ def get_spi_diff(old_spi_sow, new_spi_sow):
                     new_spi_sow.iter_rows(min_row=11, max_row=502, 
                                   min_col=9,max_col=18))):
         for j, (cell_old, cell_new) in enumerate(zip(row_old, row_new)):
-
-            if cell_old.value != cell_new.value:
-                print (cell_old.value, cell_new.value)
+            old_val = cell_old.value if cell_old.value != None else 0
+            new_val = cell_new.value if cell_new.value != None else 0 
+            if old_val != new_val:
+                print (old_val, new_val)
                 tsk = tasks[j]
                 pi = pay_items[i]
-                old_val = cell_old.value if cell_old.value != None else 0
-                new_val = cell_new.value if cell_new.value != None else 0                
+                               
                 delta = new_val - old_val
                 print(old_val, new_val, delta)
                 lol.append((str(tsk), pi, delta))
