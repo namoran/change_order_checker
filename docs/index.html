@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PRP Change Order Package Checker</title>
+<meta name="description" content="Checks that every item in a PRP change order (RFC) was transferred to the new SPI. Runs entirely in your browser.">
+<style>
+  :root { --ink:#1b1f23; --muted:#5b6770; --line:#d7dde2; --bg:#f6f8fa; --ok:#17663a; --okbg:#e7f5ec; --bad:#8a1c1c; --badbg:#fdecec; --accent:#0b5f8a; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; color:var(--ink); background:var(--bg); }
+  main { max-width:900px; margin:0 auto; padding:32px 20px 64px; }
+  h1 { font-size:1.6rem; margin:0 0 4px; }
+  .sub { color:var(--muted); margin:0 0 28px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:14px; }
+  .drop { background:#fff; border:1.5px dashed var(--line); border-radius:10px; padding:16px; min-height:112px; display:flex; flex-direction:column; gap:6px; cursor:pointer; transition:border-color .12s, background .12s; }
+  .drop:hover, .drop:focus-within { border-color:var(--accent); }
+  .drop.over { border-color:var(--accent); background:#f0f7fb; }
+  .drop.has { border-style:solid; border-color:var(--ok); }
+  .step { font-size:.72rem; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); font-weight:600; }
+  .label { font-weight:600; }
+  .hint { font-size:.85rem; color:var(--muted); }
+  .file { font-size:.85rem; color:var(--ok); font-weight:600; word-break:break-all; }
+  .drop input { position:absolute; width:1px; height:1px; opacity:0; }
+  #run { margin-top:20px; font:inherit; font-weight:600; color:#fff; background:var(--accent); border:0; border-radius:8px; padding:11px 20px; cursor:pointer; }
+  #run:disabled { background:#9fb3c0; cursor:default; }
+  #result { margin-top:26px; }
+  .banner { border-radius:10px; padding:14px 16px; font-weight:600; }
+  .banner.ok { background:var(--okbg); color:var(--ok); border:1px solid #bfe3cc; }
+  .banner.bad { background:var(--badbg); color:var(--bad); border:1px solid #f3c9c9; }
+  .banner.error { background:#fff6e5; color:#7a4b00; border:1px solid #f0d9a8; }
+  #report { margin-top:14px; background:#fff; border:1px solid var(--line); border-radius:10px; padding:8px 18px; }
+  #report h3 { font-size:1.05rem; margin:12px 0 6px; }
+  #report h4 { font-size:.95rem; margin:8px 0; color:var(--muted); font-weight:600; }
+  #report ul { margin:6px 0 12px; padding-left:22px; }
+  #report li { margin:4px 0; }
+  #report p { margin:8px 0; }
+  #tables table { border-collapse:collapse; width:100%; margin:6px 0 16px; font-size:.88rem; }
+  #tables th, #tables td { text-align:left; padding:5px 8px; border-bottom:1px solid var(--line); }
+  #tables th { color:var(--muted); font-weight:600; }
+  .hidden { display:none; }
+  footer { margin-top:34px; font-size:.85rem; color:var(--muted); }
+  footer a { color:var(--accent); }
+  details { margin-top:10px; font-size:.9rem; color:var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>PRP Change Order Package Checker</h1>
+  <p class="sub">Makes sure every item in the change order (RFC) was transferred to the new SPI. Files never leave your computer — everything runs in the browser.</p>
+
+  <div class="grid">
+    <label class="drop" id="slot-rfc">
+      <span class="step">Step 1</span>
+      <span class="label">Excel RFC</span>
+      <span class="hint">the change order package (.xlsm)</span>
+      <span class="file hidden"></span>
+      <input type="file" accept=".xlsm,.xlsx" data-slot="rfc">
+    </label>
+    <label class="drop" id="slot-old">
+      <span class="step">Step 2</span>
+      <span class="label">Old SPI</span>
+      <span class="hint">the SPI before the change order</span>
+      <span class="file hidden"></span>
+      <input type="file" accept=".xlsm,.xlsx" data-slot="old">
+    </label>
+    <label class="drop" id="slot-new">
+      <span class="step">Step 3</span>
+      <span class="label">New SPI</span>
+      <span class="hint">the newly generated SPI</span>
+      <span class="file hidden"></span>
+      <input type="file" accept=".xlsm,.xlsx" data-slot="new">
+    </label>
+  </div>
+
+  <button id="run" disabled>Check package</button>
+
+  <section id="result" class="hidden" aria-live="polite">
+    <div class="banner" id="banner"></div>
+    <div id="report" class="hidden"></div>
+    <details id="detail" class="hidden">
+      <summary>Line items read from each file</summary>
+      <div id="tables"></div>
+    </details>
+  </section>
+
+  <footer>
+    By Nicholas Moran PG at <a href="https://moran.rocks">Moran.Rocks</a>.
+    Also on <a href="https://change-order-checker.streamlit.app/">Streamlit</a>.
+  </footer>
+</main>
+
+<script src="fflate.js" defer></script>
+<script src="ppr-xlsx.js" defer></script>
+<script src="data.js" defer></script>
+<script src="logic.js" defer></script>
+<script src="ui.js" defer></script>
+</body>
+</html>

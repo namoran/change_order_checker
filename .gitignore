@@ -1,0 +1,13 @@
+# Test-only npm dependency (the page itself has none).
+node_modules
+
+# Test output.
+tests/tmp/
+
+# Real client workbooks used as fixtures — supply your own, see README.
+tests/fixtures/*.xlsm
+
+# Python.
+__pycache__/
+*.pyc
+.venv/
