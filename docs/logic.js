@@ -73,7 +73,16 @@ var COC = (function () {
         var oldVal = asNumber(a[i][j]);
         var newVal = asNumber(b[i][j]);
         if (oldVal !== newVal) {
-          out.push([TASKS[j], PAY_ITEMS[i], newVal - oldVal]);
+          // Round the difference to 6 decimal places, the same
+          // normalization aggregateRfc applies to the RFC side. The raw
+          // subtraction is a binary float: 5923.6 - 7000 comes out as
+          // -1076.3999999999996, which never equals the RFC's -1076.4
+          // under exact comparison and falsely rejects a valid package.
+          // A difference that rounds to zero at 6 decimals is float
+          // noise, so it is omitted, mirroring how aggregateRfc drops
+          // net-zero totals. Mirrors get_spi_diff in the Python version.
+          var delta = round6(newVal - oldVal);
+          if (delta !== 0) out.push([TASKS[j], PAY_ITEMS[i], delta]);
         }
       }
     }

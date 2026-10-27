@@ -102,12 +102,24 @@ def get_spi_diff(old_spi_sow, new_spi_sow):
                 print (old_val, new_val)
                 tsk = tasks[j]
                 pi = pay_items[i]
-                               
-                delta = new_val - old_val
+
+                # Round the difference to 6 decimal places, the same
+                # normalization aggregate_rfc applies to the RFC side.
+                # The raw subtraction is a binary float: 5923.6 - 7000
+                # comes out as -1076.3999999999996, which never equals the
+                # RFC's -1076.4 under exact comparison and falsely rejects
+                # a valid package. A difference that rounds to zero at
+                # 6 decimals is float noise between two stored values of
+                # the same quantity, so it is omitted, mirroring how
+                # aggregate_rfc drops net-zero totals.
+                delta = round(new_val - old_val, 6)
+                if delta == int(delta):
+                    delta = int(delta)
                 print(old_val, new_val, delta)
-                lol.append((str(tsk), pi, delta))
-                lol.sort()
-                lol.sort(key=sort_by_pi)
+                if delta != 0:
+                    lol.append((str(tsk), pi, delta))
+                    lol.sort()
+                    lol.sort(key=sort_by_pi)
     return lol
 
 def aggregate_rfc(rfc_dump):
