@@ -3,8 +3,9 @@
  * A straight port of comparenew_spi_to_rfc.py. Keep the two in sync: the
  * Python version is what runs on Streamlit, this one runs in the browser.
  *
- * Depends on PPRXlsx (ppr-xlsx.js) for reading and PAY_ITEMS/TASKS
- * (data.js). No DOM access, so it can be tested under Node.
+ * Depends on PPRXlsx (ppr-xlsx.js) for reading. No DOM access, so it
+ * can be tested under Node. Pay items are matched by the labels printed
+ * in each workbook -- there is no built-in pay item list.
  */
 var COC = (function () {
   'use strict';
@@ -13,10 +14,6 @@ var COC = (function () {
   var SOW_SHEET = 'SOW Units';
   var RFC_FIRST_ROW = 12;   // openpyxl min_row=12
   var RFC_LAST_ROW = 111;   // openpyxl max_row=111
-  var SOW_FIRST_ROW = 11;   // openpyxl min_row=11
-  var SOW_LAST_ROW = 502;   // openpyxl max_row=502
-  var SOW_FIRST_COL = 9;    // column I = TASK 1
-  var SOW_LAST_COL = 18;    // column R = TASK 10
 
   /* Python's str() on a number: 300 -> "300", 1.5 -> "1.5". */
   function fmt(v) {
@@ -28,25 +25,115 @@ var COC = (function () {
     return v === null ? 0 : v;
   }
 
-  function payIndex(pi) {
-    var i = PAY_ITEMS.indexOf(pi);
-    if (i === -1) {
-      throw new Error(
-        'Pay item "' + pi + '" is not in the checker\'s pay item list. ' +
-        'If FDEP added a new pay item, regenerate data.js (tools/gen-data.py).'
-      );
+  var LABEL_RE = /^\d{1,2}([-.][0-9A-Za-z]+)*\.$/;
+
+  /* Locate the pay item table in an SOW Units sheet from the workbook
+   * itself. The header row carries a 'PAY ITEM' cell and the 'TASK n
+   * QUANT.' column headers; pay item labels run down the PAY ITEM
+   * column below the header, ending at the totals/version block.
+   * Throws when the table cannot be found -- positions are never
+   * guessed, because a workbook from a different SPI version has
+   * different rows (Version 10.0, for example, has no section 22, so
+   * section 23 sits 31 rows above where a fixed list would look).
+   * Mirrors spi_layout in the Python version. */
+  function spiLayout(sheet) {
+    var scan = sheet.range(1, 40, 1, 24);
+    var hr = -1, lc = -1;
+    for (var i = 0; i < scan.length && hr < 0; i++) {
+      for (var j = 0; j < scan[i].length; j++) {
+        var v = scan[i][j];
+        if (typeof v === 'string' && v.trim().toLowerCase() === 'pay item') { hr = i + 1; lc = j + 1; break; }
+      }
     }
-    return i;
+    if (hr < 0) {
+      throw new Error('no pay item table found in the SPI workbook: ' +
+                      'no "PAY ITEM" header cell in the SOW Units sheet');
+    }
+    var taskCols = {};
+    for (var r = Math.max(1, hr - 1); r <= hr + 1; r++) {
+      for (var c = 1; c <= 24; c++) {
+        var hv = sheet.value(r, c);
+        if (typeof hv === 'string') {
+          var m = /TASK\s*(\d+)/i.exec(hv);
+          if (m) taskCols[parseInt(m[1], 10)] = c;
+        }
+      }
+    }
+    if (!Object.keys(taskCols).length) {
+      throw new Error('no task quantity columns found in the SPI workbook');
+    }
+    var colVals = sheet.range(hr + 1, hr + 800, lc, lc);
+    var labels = [], rows = {}, started = false, misses = 0;
+    for (var k = 0; k < colVals.length; k++) {
+      var raw = colVals[k][0];
+      var s = raw === null || raw === undefined ? '' : String(raw).trim();
+      if (LABEL_RE.test(s)) {
+        started = true; misses = 0;
+        if (!(s in rows)) { rows[s] = hr + 1 + k; labels.push(s); }
+      } else if (started) {
+        if (++misses >= 10) break;
+      }
+    }
+    if (labels.length < 10) {
+      throw new Error('only ' + labels.length + ' pay items found in the SPI workbook');
+    }
+    return { labels: labels, rows: rows, taskCols: taskCols };
   }
 
-  /* Python sorts the tuples, then re-sorts by pay item position (stable). */
-  function sortItems(items) {
+  /* Every task quantity in the table: {label + NUL + task number: value}. */
+  function quantities(sheet, layout) {
+    var tcols = Object.keys(layout.taskCols).map(Number);
+    var colNums = tcols.map(function (t) { return layout.taskCols[t]; });
+    var lo = Math.min.apply(null, colNums), hi = Math.max.apply(null, colNums);
+    var inv = {};
+    tcols.forEach(function (t) { inv[layout.taskCols[t]] = t; });
+    var rowNums = layout.labels.map(function (l) { return layout.rows[l]; });
+    var first = Math.min.apply(null, rowNums), last = Math.max.apply(null, rowNums);
+    var byRow = {};
+    layout.labels.forEach(function (l) { byRow[layout.rows[l]] = l; });
+    var grid = sheet.range(first, last, lo, hi);
+    var out = {};
+    for (var i = 0; i < grid.length; i++) {
+      var label = byRow[first + i];
+      if (!label) continue;
+      for (var j = 0; j < grid[i].length; j++) {
+        var t = inv[lo + j], v = grid[i][j];
+        if (t !== undefined && v !== null) out[label + '\u0000' + t] = v;
+      }
+    }
+    return out;
+  }
+
+  /* Label order for sorting and comparing: the new SPI's workbook
+   * order, then any labels only the old SPI carries, in its order. */
+  function spiOrder(oldSheet, newSheet) {
+    var oldLayout = spiLayout(oldSheet);
+    var newLayout = spiLayout(newSheet);
+    var order = newLayout.labels.slice();
+    oldLayout.labels.forEach(function (l) { if (!(l in newLayout.rows)) order.push(l); });
+    var rank = {};
+    order.forEach(function (l, i) { rank[l] = i; });
+    return { oldLayout: oldLayout, newLayout: newLayout, order: order, rank: rank };
+  }
+
+  /* Sort key shared by the RFC aggregate and the SPI difference so the
+   * two lists line up: workbook label order first, then task number.
+   * Items missing from the SPI rank after all workbook items. */
+  function orderKey(rank, task, pi) {
+    var tnum = parseInt(String(task).split(' ').pop(), 10);
+    if (rank && (pi in rank)) return [rank[pi], tnum, ''];
+    return [1000000, tnum, pi];
+  }
+
+  function sortByRank(items, rank) {
     items.sort(function (a, b) {
-      if (a[0] !== b[0]) return a[0] < b[0] ? -1 : 1;
-      if (a[1] !== b[1]) return a[1] < b[1] ? -1 : 1;
-      return asNumber(a[2]) - asNumber(b[2]);
+      var ka = orderKey(rank, a[0], a[1]), kb = orderKey(rank, b[0], b[1]);
+      for (var i = 0; i < 3; i++) {
+        if (ka[i] < kb[i]) return -1;
+        if (ka[i] > kb[i]) return 1;
+      }
+      return 0;
     });
-    items.sort(function (a, b) { return payIndex(a[1]) - payIndex(b[1]); });
     return items;
   }
 
@@ -60,18 +147,27 @@ var COC = (function () {
       if (task === null || units === 0) continue;   // Python: A is not None and H != 0
       out.push(['TASK ' + fmt(task), String(m[i][1]), units]);
     }
-    return sortItems(out);
+    out.sort(function (a, b) {
+      if (a[0] !== b[0]) return a[0] < b[0] ? -1 : 1;
+      if (a[1] !== b[1]) return a[1] < b[1] ? -1 : 1;
+      return asNumber(a[2]) - asNumber(b[2]);
+    });
+    return out;
   }
 
-  /* Difference between the old and new SPI, cell by cell. */
+  /* Difference between the old and new SPI. Items are matched by the
+   * pay item labels printed in each workbook, so the two workbooks do
+   * not need the same rows or the same SPI version. */
   function getSpiDiff(oldSheet, newSheet) {
-    var a = oldSheet.range(SOW_FIRST_ROW, SOW_LAST_ROW, SOW_FIRST_COL, SOW_LAST_COL);
-    var b = newSheet.range(SOW_FIRST_ROW, SOW_LAST_ROW, SOW_FIRST_COL, SOW_LAST_COL);
+    var so = spiOrder(oldSheet, newSheet);
+    var oldQ = quantities(oldSheet, so.oldLayout);
+    var newQ = quantities(newSheet, so.newLayout);
     var out = [];
-    for (var i = 0; i < a.length; i++) {
-      for (var j = 0; j < a[i].length; j++) {
-        var oldVal = asNumber(a[i][j]);
-        var newVal = asNumber(b[i][j]);
+    so.order.forEach(function (pi) {
+      for (var tnum = 1; tnum <= 10; tnum++) {
+        var k = pi + '\u0000' + tnum;
+        var oldVal = k in oldQ ? oldQ[k] : 0;
+        var newVal = k in newQ ? newQ[k] : 0;
         if (oldVal !== newVal) {
           // Round the difference to 6 decimal places, the same
           // normalization aggregateRfc applies to the RFC side. The raw
@@ -82,11 +178,11 @@ var COC = (function () {
           // noise, so it is omitted, mirroring how aggregateRfc drops
           // net-zero totals. Mirrors get_spi_diff in the Python version.
           var delta = round6(newVal - oldVal);
-          if (delta !== 0) out.push([TASKS[j], PAY_ITEMS[i], delta]);
+          if (delta !== 0) out.push(['TASK ' + tnum, pi, delta]);
         }
       }
-    }
-    return sortItems(out);
+    });
+    return sortByRank(out, so.rank);
   }
 
   function key(item) { return item[0] + '\u0000' + item[1] + '\u0000' + fmt(item[2]); }
@@ -111,7 +207,7 @@ var COC = (function () {
    * RFC total), so combine lines for the same task and pay item into one
    * total before comparing to the SPI difference. Mirrors aggregate_rfc
    * in the Python version. */
-  function aggregateRfc(items) {
+  function aggregateRfc(items, rank) {
     var totals = {}, counts = {}, keys = [];
     items.forEach(function (it) {
       var k = it[0] + '\u0000' + it[1];
@@ -120,9 +216,12 @@ var COC = (function () {
       counts[k] += 1;
     });
     keys.sort(function (a, b) {
-      var d = payIndex(a[1]) - payIndex(b[1]);
-      if (d !== 0) return d;
-      return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0;
+      var ka = orderKey(rank, a[0], a[1]), kb = orderKey(rank, b[0], b[1]);
+      for (var i = 0; i < 3; i++) {
+        if (ka[i] < kb[i]) return -1;
+        if (ka[i] > kb[i]) return 1;
+      }
+      return 0;
     });
     var agg = [], notes = [];
     keys.forEach(function (tp) {
@@ -134,11 +233,12 @@ var COC = (function () {
       }
       if (units !== 0) agg.push([tp[0], tp[1], units]);
     });
-    return { items: sortItems(agg), notes: notes };
+    return { items: sortByRank(agg, rank), notes: notes };
   }
 
   function generateReport(rfcSheet, oldSheet, newSheet) {
-    var agg = aggregateRfc(loadRfc(rfcSheet));
+    var rank = spiOrder(oldSheet, newSheet).rank;
+    var agg = aggregateRfc(loadRfc(rfcSheet), rank);
     var rfcDump = agg.items;
     var spiDelta = getSpiDiff(oldSheet, newSheet);
     var lines = [];
