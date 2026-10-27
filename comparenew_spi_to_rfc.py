@@ -110,9 +110,39 @@ def get_spi_diff(old_spi_sow, new_spi_sow):
                 lol.sort(key=sort_by_pi)
     return lol
 
+def aggregate_rfc(rfc_dump):
+    '''An RFC can list the same pay item more than once in a task -- for
+    example a negative line removing a placeholder amount and a positive
+    line entering the actual quoted amount. FDEP's consistency rule is on
+    the net effect (the new SPI total equals the previous total plus the
+    RFC total), so combine lines for the same task and pay item into one
+    total before comparing to the SPI difference. Returns the combined
+    list plus a note for each item whose lines were combined.'''
+    totals = {}
+    counts = {}
+    for task, pi, units in rfc_dump:
+        key = (task, pi)
+        totals[key] = totals.get(key, 0) + units
+        counts[key] = counts.get(key, 0) + 1
+    agg = []
+    notes = []
+    for task, pi in sorted(totals, key=lambda k: (sort_by_pi(k), k[0])):
+        units = round(totals[(task, pi)], 6)
+        if units == int(units):
+            units = int(units)
+        if counts[(task, pi)] > 1:
+            notes.append('- note: {} rfc lines for {} pay item {} were '
+                         'combined into one total of {} units'.format(
+                             counts[(task, pi)], task, pi, units))
+        if units != 0:
+            agg.append((task, pi, units))
+    agg.sort()
+    agg.sort(key=sort_by_pi)
+    return agg, notes
+
 def generate_report(ws_rfc, ws_old_spi, ws_new_spi):
     report = []
-    rfc_dump = load_rfc(ws_rfc)
+    rfc_dump, rfc_notes = aggregate_rfc(load_rfc(ws_rfc))
     spi_delta = get_spi_diff(ws_old_spi, ws_new_spi)
     print("rfc items: ",  rfc_dump)
     print("difference between old and new spis: ", spi_delta) 
@@ -121,12 +151,14 @@ def generate_report(ws_rfc, ws_old_spi, ws_new_spi):
         st.balloons()
         report.append('### Success!!')
         report.append('#### RFC items were transferred to new SPI')
+        report.extend(rfc_notes)
         print('rfc items successfully transfered to new SPI')
     else:
         success = False
         print('this rfc package is incorrect\nthe following items need attention:')
         report.append('### This rfc package is incorrect !')
         report.append('#### The following items need attention:')
+        report.extend(rfc_notes)
         if len(rfc_dump) != len(spi_delta): 
             report.append('- number of items in rfc don\'t match new spi')
             print('- number of items in rfc don\'t match new spi')

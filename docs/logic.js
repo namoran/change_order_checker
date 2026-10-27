@@ -88,19 +88,62 @@ var COC = (function () {
     return false;
   }
 
+  /* Python round(x, 6) plus int normalization, so combined totals print
+   * and compare the way the Python version's do. */
+  function round6(v) {
+    var r = Math.round(v * 1e6) / 1e6;
+    return r === 0 ? 0 : r;
+  }
+
+  /* An RFC can list the same pay item more than once in a task -- for
+   * example a negative line removing a placeholder amount and a positive
+   * line entering the actual quoted amount. FDEP's consistency rule is on
+   * the net effect (the new SPI total equals the previous total plus the
+   * RFC total), so combine lines for the same task and pay item into one
+   * total before comparing to the SPI difference. Mirrors aggregate_rfc
+   * in the Python version. */
+  function aggregateRfc(items) {
+    var totals = {}, counts = {}, keys = [];
+    items.forEach(function (it) {
+      var k = it[0] + '\u0000' + it[1];
+      if (!(k in totals)) { totals[k] = 0; counts[k] = 0; keys.push([it[0], it[1]]); }
+      totals[k] += asNumber(it[2]);
+      counts[k] += 1;
+    });
+    keys.sort(function (a, b) {
+      var d = payIndex(a[1]) - payIndex(b[1]);
+      if (d !== 0) return d;
+      return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0;
+    });
+    var agg = [], notes = [];
+    keys.forEach(function (tp) {
+      var k = tp[0] + '\u0000' + tp[1];
+      var units = round6(totals[k]);
+      if (counts[k] > 1) {
+        notes.push('- note: ' + counts[k] + ' rfc lines for ' + tp[0] + ' pay item ' + tp[1] +
+                   ' were combined into one total of ' + fmt(units) + ' units');
+      }
+      if (units !== 0) agg.push([tp[0], tp[1], units]);
+    });
+    return { items: sortItems(agg), notes: notes };
+  }
+
   function generateReport(rfcSheet, oldSheet, newSheet) {
-    var rfcDump = loadRfc(rfcSheet);
+    var agg = aggregateRfc(loadRfc(rfcSheet));
+    var rfcDump = agg.items;
     var spiDelta = getSpiDiff(oldSheet, newSheet);
     var lines = [];
 
     if (rfcDump.length === spiDelta.length && rfcDump.every(function (it) { return contains(spiDelta, it); })) {
       lines.push('### Success!!');
       lines.push('#### RFC items were transferred to new SPI');
+      agg.notes.forEach(function (n) { lines.push(n); });
       return { success: true, lines: lines, rfcItems: rfcDump, spiItems: spiDelta };
     }
 
     lines.push('### This rfc package is incorrect !');
     lines.push('#### The following items need attention:');
+    agg.notes.forEach(function (n) { lines.push(n); });
 
     if (rfcDump.length !== spiDelta.length) {
       lines.push("- number of items in rfc don't match new spi");
