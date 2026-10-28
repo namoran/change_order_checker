@@ -112,7 +112,9 @@
         .then(function (bufs) {
           var res = COC.analyze(bufs[0], bufs[1], bufs[2]);
           show(res.success ? 'ok' : 'bad',
-               res.success ? 'Success — the RFC items are in the new SPI.' : 'This RFC package is incorrect.');
+               res.success ? 'Success — the RFC items are in the new SPI.'
+                 : res.status === 'unverified' ? 'This RFC package could not be fully verified.'
+                 : 'This RFC package is incorrect.');
           render(res.lines);
           tables.innerHTML = table('RFC line items', res.rfcItems) + table('New SPI vs old SPI', res.spiItems);
           detail.classList.remove('hidden');

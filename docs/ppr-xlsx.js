@@ -4,6 +4,9 @@
  * makes it fast: 3 full workbooks take ~80 ms here versus ~1.5 s for a
  * general-purpose parser. Values are the *cached* values Excel stored, which
  * matches openpyxl's data_only=True behaviour that the Python tools relied on.
+ * A cell's formula, when it has one, is exposed separately (Sheet.formula):
+ * the checker computes the handful of quantity formulas these workbooks
+ * carry instead of trusting their cached values, which may be stale.
  *
  * Needs fflate (unzipSync) only.
  */
@@ -177,10 +180,119 @@ var PPRXlsx = (function () {
     return out;
   };
 
+  /* Formula text per cell, with shared formulas expanded. Excel stores a
+   * shared formula's text once, on its master cell; follower cells carry
+   * only the shared index. A follower's formula is the master's with its
+   * unanchored references shifted to the follower's position. */
+  Sheet.prototype._formulaIndex = function () {
+    if (this._fIdx) return this._fIdx;
+    var cells = {};    // 'row|col' -> {text} or {si}
+    var masters = {};  // si -> {text, row, col}
+    var rowRe = /<row\b([^>]*?)(?:\/>|>([\s\S]*?)<\/row>)/g, m;
+    while ((m = rowRe.exec(this.xml))) {
+      var body = m[2];
+      if (!body) continue;
+      var cellRe = /<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g, c;
+      while ((c = cellRe.exec(body))) {
+        var inner = c[2];
+        if (!inner) continue;
+        var f = /<f\b([^>]*?)(?:\/>|>([\s\S]*?)<\/f>)/.exec(inner);
+        if (!f) continue;
+        var ref = /\br="([A-Z]+)(\d+)"/.exec(c[1]);
+        if (!ref) continue;
+        var row = parseInt(ref[2], 10), col = colIndex(ref[1]);
+        var si = /\bsi="(\d+)"/.exec(f[1]);
+        var text = f[2] ? unxml(f[2]) : null;
+        if (text) {
+          cells[row + '|' + col] = { text: text };
+          if (si) masters[si[1]] = { text: text, row: row, col: col };
+        } else if (si) {
+          cells[row + '|' + col] = { si: si[1] };
+        }
+      }
+    }
+    this._fIdx = { cells: cells, masters: masters };
+    return this._fIdx;
+  };
+
+  /* The formula in a cell, or null when the cell holds a plain value.
+   * Returns '' when the cell is a shared-formula follower whose master
+   * cannot be found: the cell does hold a formula, but not one that can
+   * be reconstructed, so callers must not fall back to the cached value. */
+  Sheet.prototype.formula = function (row, col) {
+    var idx = this._formulaIndex();
+    var e = idx.cells[row + '|' + col];
+    if (!e) return null;
+    if (e.text) return e.text;
+    var master = idx.masters[e.si];
+    if (!master) return '';
+    return shiftFormula(master.text, col - master.col, row - master.row);
+  };
+
+  /* Map of 'row|col' -> formula text for every formula cell in a range. */
+  Sheet.prototype.formulasIn = function (minRow, maxRow, minCol, maxCol) {
+    var idx = this._formulaIndex();
+    var out = {};
+    for (var k in idx.cells) {
+      var p = k.split('|');
+      var row = +p[0], col = +p[1];
+      if (row < minRow || row > maxRow || col < minCol || col > maxCol) continue;
+      var f = this.formula(row, col);
+      if (f !== null) out[k] = f;
+    }
+    return out;
+  };
+
+  Sheet.prototype.maxRow = function () {
+    if (this._maxRow) return this._maxRow;
+    var max = 0, re = /<row\b[^>]*\br="(\d+)"/g, m;
+    while ((m = re.exec(this.xml))) {
+      var n = parseInt(m[1], 10);
+      if (n > max) max = n;
+    }
+    return (this._maxRow = max);
+  };
+
   function colIndex(letters) {
     var n = 0;
     for (var i = 0; i < letters.length; i++) n = n * 26 + (letters.charCodeAt(i) - 64);
     return n;
+  }
+
+  function colName(n) {
+    var s = '';
+    while (n > 0) {
+      var r = (n - 1) % 26;
+      s = String.fromCharCode(65 + r) + s;
+      n = (n - 1 - r) / 26;
+    }
+    return s;
+  }
+
+  /* Shift the cell references in a formula by (dCol, dRow), the way Excel
+   * expands a shared formula from its master cell to a follower cell:
+   * references anchored with $ do not move. Quoted strings are untouched. */
+  function shiftFormula(text, dCol, dRow) {
+    if (!dCol && !dRow) return text;
+    var parts = text.split(/("(?:[^"]|"")*")/);
+    for (var i = 0; i < parts.length; i += 2) {
+      parts[i] = parts[i]
+        .replace(/(^|[^A-Za-z0-9_.])(\$?)([A-Z]{1,3})(\$?)(\d+)/g, function (m, pre, d1, letters, d2, digits) {
+          var col = letters, row = digits;
+          if (!d1) {
+            var ci = colIndex(letters) + dCol;
+            if (ci >= 1) col = colName(ci);
+          }
+          if (!d2) row = String(parseInt(digits, 10) + dRow);
+          return pre + d1 + col + d2 + row;
+        })
+        .replace(/(^|[^A-Za-z0-9_.])(\$?)([A-Z]{1,3}):(\$?)([A-Z]{1,3})/g, function (m, pre, d1, c1, d2, c2) {
+          var a = d1 ? d1 + c1 : colName(colIndex(c1) + dCol);
+          var b = d2 ? d2 + c2 : colName(colIndex(c2) + dCol);
+          return pre + a + ':' + b;
+        });
+    }
+    return parts.join('');
   }
 
   function open(bytes) { return new Workbook(bytes); }

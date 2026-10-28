@@ -80,7 +80,10 @@ var COC = (function () {
     return { labels: labels, rows: rows, taskCols: taskCols };
   }
 
-  /* Every task quantity in the table: {label + NUL + task number: value}. */
+  /* Every task quantity in the table: {label + NUL + task number: value},
+   * plus the keys whose quantity is a formula this checker cannot
+   * compute. A formula cell's value is its computed value, never its
+   * cached value (see the formula section below). */
   function quantities(sheet, layout) {
     var tcols = Object.keys(layout.taskCols).map(Number);
     var colNums = tcols.map(function (t) { return layout.taskCols[t]; });
@@ -101,7 +104,20 @@ var COC = (function () {
         if (t !== undefined && v !== null) out[label + '\u0000' + t] = v;
       }
     }
-    return out;
+    var unverified = {};
+    var fmap = sheet.formulasIn(first, last, lo, hi);
+    Object.keys(fmap).forEach(function (rk) {
+      var p = rk.split('|');
+      var row = +p[0], col = +p[1];
+      var label = byRow[row], t = inv[col];
+      if (!label || t === undefined) return;
+      var key = label + '\u0000' + t;
+      var res = resolvedValue(sheet, row, col, 0, {});
+      if (res.ok && typeof res.value === 'number') out[key] = res.value;
+      else if (res.ok) delete out[key];
+      else { delete out[key]; unverified[key] = true; }
+    });
+    return { values: out, unverified: unverified };
   }
 
   /* Label order for sorting and comparing: the new SPI's workbook
@@ -137,14 +153,205 @@ var COC = (function () {
     return items;
   }
 
-  /* Rows of the RFC sheet that actually carry a quantity. */
+  /* ---- Formula quantities -------------------------------------------------
+   * A few quantity cells in these workbooks hold formulas instead of typed
+   * numbers -- the 1-7. handling fee in the SPI (a SUMIF over the task's
+   * reimbursable items) and the fee table in the RFC (a SUMIFS over the
+   * RFC's reimbursable lines). The reader supplies only the cached values
+   * Excel last saved, and a generated SPI keeps the old SPI's cache, so
+   * comparing caches fails correct packages and passes doctored ones.
+   * Instead, a formula cell's value is computed from the sheet's own data.
+   * Only the SUMIF/SUMIFS shapes are computed; anything else is reported
+   * as unverified by the callers -- a cached value is never substituted,
+   * because a stale or doctored cache is exactly what this replaces. */
+
+  var EVAL_DEPTH = 4;
+
+  /* Split a formula argument list on its top-level commas. */
+  function splitArgs(s) {
+    var out = [], depth = 0, cur = '', inStr = false;
+    for (var i = 0; i < s.length; i++) {
+      var ch = s[i];
+      if (inStr) {
+        cur += ch;
+        if (ch === '"') {
+          if (s[i + 1] === '"') { cur += '"'; i++; } else inStr = false;
+        }
+        continue;
+      }
+      if (ch === '"') { inStr = true; cur += ch; continue; }
+      if (ch === '(') depth++;
+      else if (ch === ')') depth--;
+      if (ch === ',' && depth === 0) { out.push(cur); cur = ''; continue; }
+      cur += ch;
+    }
+    out.push(cur);
+    return out.map(function (a) { return a.trim(); });
+  }
+
+  /* A1-style range: 'I11:I500', '$E$11:$E$500', a full column 'H:H', or a
+   * single cell. r2 is Infinity for a full column; callers cap it at the
+   * sheet's last row. */
+  function parseRange(s) {
+    var m = /^\$?([A-Z]{1,3})\$?(\d+)?(?::\$?([A-Z]{1,3})\$?(\d+)?)?$/
+      .exec(s.replace(/\s+/g, '').toUpperCase());
+    if (!m) return null;
+    if (m[3] && !!m[2] !== !!m[4]) return null;   // mixed 'A1:B' forms
+    var c1 = PPRXlsx.colIndex(m[1]);
+    var r1 = m[2] ? parseInt(m[2], 10) : 1;
+    var c2 = m[3] ? PPRXlsx.colIndex(m[3]) : c1;
+    var r2 = m[4] ? parseInt(m[4], 10) : (m[3] ? Infinity : r1);
+    return { c1: c1, r1: r1, c2: c2, r2: r2 };
+  }
+
+  function escapeRe(ch) { return ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+  /* Excel criterion text to a matcher: case-insensitive, * and ? are
+   * wildcards, ~ escapes them. Comparison criteria ('>=5' and the like)
+   * are not supported and return null. */
+  function parseCriterion(raw) {
+    raw = raw.trim();
+    if (/^"[\s\S]*"$/.test(raw)) {
+      var s = raw.slice(1, -1).replace(/""/g, '"');
+      if (/^[<>=]/.test(s)) return null;
+      var out = '';
+      for (var i = 0; i < s.length; i++) {
+        var ch = s[i];
+        if (ch === '~' && i + 1 < s.length && '*?~'.indexOf(s[i + 1]) >= 0) out += escapeRe(s[++i]);
+        else if (ch === '*') out += '.*';
+        else if (ch === '?') out += '.';
+        else out += escapeRe(ch);
+      }
+      return { kind: 'text', re: new RegExp('^' + out + '$', 'i') };
+    }
+    if (/^-?\d+(\.\d+)?$/.test(raw)) return { kind: 'num', value: parseFloat(raw) };
+    return null;
+  }
+
+  function criterionMatches(crit, value) {
+    if (crit.kind === 'num') return typeof value === 'number' && value === crit.value;
+    return typeof value === 'string' && crit.re.test(value);
+  }
+
+  /* The value of a cell: a plain value as stored, a formula computed.
+   * Returns {ok:false} when a formula cannot be computed. */
+  function resolvedValue(sheet, row, col, depth, visiting) {
+    var f = sheet.formula(row, col);
+    if (f === null) return { ok: true, value: sheet.value(row, col) };
+    if (depth >= EVAL_DEPTH) return { ok: false };
+    var key = row + '|' + col;
+    if (visiting[key]) return { ok: false };
+    visiting[key] = true;
+    var r = evalFormula(sheet, f, depth + 1, visiting);
+    delete visiting[key];
+    return r;
+  }
+
+  function resolvedGridValue(sheet, g, dr, dc, depth, visiting) {
+    var row = g.r1 + dr, col = g.c1 + dc;
+    if (sheet.formula(row, col) !== null) return resolvedValue(sheet, row, col, depth, visiting);
+    return { ok: true, value: g.grid[dr][dc] };
+  }
+
+  /* Compute a SUMIF/SUMIFS formula from the sheet's own cells, following
+   * Excel's semantics for the parts these workbooks use: criteria ranges
+   * and the sum range must cover the same extent, a text criterion
+   * matches case-insensitively with wildcards, and only numeric values
+   * in the sum range are added. */
+  function evalFormula(sheet, text, depth, visiting) {
+    var m = /^\s*(SUMIFS?)\s*\(([\s\S]*)\)\s*$/i.exec(text);
+    if (!m) return { ok: false };
+    var args = splitArgs(m[2]);
+    var sumArg, pairArgs;
+    if (m[1].toUpperCase() === 'SUMIFS') {
+      if (args.length < 3 || args.length % 2 === 0) return { ok: false };
+      sumArg = args[0];
+      pairArgs = args.slice(1);
+    } else {
+      if (args.length < 2 || args.length > 3) return { ok: false };
+      pairArgs = [args[0], args[1]];
+      sumArg = args.length === 3 ? args[2] : args[0];
+    }
+    var sumRange = parseRange(sumArg);
+    if (!sumRange) return { ok: false };
+    var crits = [];
+    for (var i = 0; i < pairArgs.length; i += 2) {
+      var cr = parseRange(pairArgs[i]);
+      var cm = parseCriterion(pairArgs[i + 1]);
+      if (!cr || !cm) return { ok: false };
+      crits.push({ range: cr, match: cm });
+    }
+    var maxR = sheet.maxRow();
+    function cap(r) {
+      return { c1: r.c1, r1: r.r1, c2: r.c2, r2: Math.min(r.r2, maxR) };
+    }
+    var base = cap(crits[0].range);
+    var rows = base.r2 - base.r1 + 1, cols = base.c2 - base.c1 + 1;
+    if (rows <= 0 || cols <= 0) return { ok: false };
+    var sr = cap(sumRange);
+    if (sr.r1 === sr.r2 && sr.c1 === sr.c2 && (rows > 1 || cols > 1)) {
+      // SUMIF with a single-cell sum range: Excel expands it to the
+      // criteria range's extent from that corner.
+      sr = { c1: sr.c1, r1: sr.r1, c2: sr.c1 + cols - 1, r2: sr.r1 + rows - 1 };
+    }
+    if (sr.r2 - sr.r1 + 1 !== rows || sr.c2 - sr.c1 + 1 !== cols) return { ok: false };
+    var critGrids = [];
+    for (i = 0; i < crits.length; i++) {
+      var crg = cap(crits[i].range);
+      if (crg.r2 - crg.r1 + 1 !== rows || crg.c2 - crg.c1 + 1 !== cols) return { ok: false };
+      critGrids.push({ grid: sheet.range(crg.r1, crg.r2, crg.c1, crg.c2), r1: crg.r1, c1: crg.c1 });
+    }
+    var sumGrid = { grid: sheet.range(sr.r1, sr.r2, sr.c1, sr.c2), r1: sr.r1, c1: sr.c1 };
+    var total = 0;
+    for (var dr = 0; dr < rows; dr++) {
+      for (var dc = 0; dc < cols; dc++) {
+        var all = true;
+        for (var k = 0; k < crits.length; k++) {
+          // Criteria are matched on the stored value. A criteria cell
+          // can hold an unrelated display formula (the RFC sheet's
+          // header cells pull facility data with IF formulas); what a
+          // criterion needs is the value Excel matches on, and refusing
+          // to match on it would fail every fee row in the workbook.
+          // Only the sum range -- the quantity being verified -- is
+          // computed rather than read.
+          if (!criterionMatches(crits[k].match, critGrids[k].grid[dr][dc])) { all = false; break; }
+        }
+        if (!all) continue;
+        var sv = resolvedGridValue(sheet, sumGrid, dr, dc, depth, visiting);
+        if (!sv.ok) return { ok: false };
+        if (typeof sv.value === 'number') total += sv.value;
+      }
+    }
+    return { ok: true, value: total };
+  }
+
+  /* Rows of the RFC sheet that actually carry a quantity. A quantity
+   * that is a formula (the fee table's SUMIFS rows) is computed from
+   * the sheet's own lines; one that cannot be computed is reported
+   * unverified and the row is left out, never read from its cache. */
   function loadRfc(sheet) {
+    return loadRfcFull(sheet).items;
+  }
+
+  function loadRfcFull(sheet) {
     var m = sheet.range(RFC_FIRST_ROW, RFC_LAST_ROW, 1, 9);
+    var fmap = sheet.formulasIn(RFC_FIRST_ROW, RFC_LAST_ROW, 8, 8);
     var out = [];
+    var unverified = [];
     for (var i = 0; i < m.length; i++) {
       var task = m[i][0];
       var units = m[i][7];
-      if (task === null || units === 0) continue;   // Python: A is not None and H != 0
+      var rowNum = RFC_FIRST_ROW + i;
+      var skip = false;
+      if (fmap[rowNum + '|8'] !== undefined && task !== null) {
+        var res = resolvedValue(sheet, rowNum, 8, 0, {});
+        if (res.ok && typeof res.value === 'number') units = res.value;
+        else {
+          unverified.push({ task: 'TASK ' + fmt(task), payItem: String(m[i][1]), source: 'the rfc' });
+          skip = true;
+        }
+      }
+      if (skip || task === null || units === 0) continue;   // Python: A is not None and H != 0
       out.push(['TASK ' + fmt(task), String(m[i][1]), units]);
     }
     out.sort(function (a, b) {
@@ -152,20 +359,38 @@ var COC = (function () {
       if (a[1] !== b[1]) return a[1] < b[1] ? -1 : 1;
       return asNumber(a[2]) - asNumber(b[2]);
     });
-    return out;
+    return { items: out, unverified: unverified };
   }
 
   /* Difference between the old and new SPI. Items are matched by the
    * pay item labels printed in each workbook, so the two workbooks do
    * not need the same rows or the same SPI version. */
   function getSpiDiff(oldSheet, newSheet) {
+    return spiDiffFull(oldSheet, newSheet).items;
+  }
+
+  /* The SPI difference plus the items that could not be compared
+   * because a quantity is a formula this checker cannot compute. An
+   * unverified item is excluded from the difference entirely: comparing
+   * it by its cached value is what produced false verdicts. */
+  function spiDiffFull(oldSheet, newSheet) {
     var so = spiOrder(oldSheet, newSheet);
-    var oldQ = quantities(oldSheet, so.oldLayout);
-    var newQ = quantities(newSheet, so.newLayout);
+    var oldRes = quantities(oldSheet, so.oldLayout);
+    var newRes = quantities(newSheet, so.newLayout);
+    var oldQ = oldRes.values, newQ = newRes.values;
     var out = [];
+    var unverified = [];
     so.order.forEach(function (pi) {
       for (var tnum = 1; tnum <= 10; tnum++) {
         var k = pi + '\u0000' + tnum;
+        var unOld = !!oldRes.unverified[k], unNew = !!newRes.unverified[k];
+        if (unOld || unNew) {
+          unverified.push({
+            task: 'TASK ' + tnum, payItem: pi,
+            source: unOld && unNew ? 'the old and new spi' : (unOld ? 'the old spi' : 'the new spi')
+          });
+          continue;
+        }
         var oldVal = k in oldQ ? oldQ[k] : 0;
         var newVal = k in newQ ? newQ[k] : 0;
         if (oldVal !== newVal) {
@@ -182,7 +407,7 @@ var COC = (function () {
         }
       }
     });
-    return sortByRank(out, so.rank);
+    return { items: sortByRank(out, so.rank), unverified: unverified };
   }
 
   function key(item) { return item[0] + '\u0000' + item[1] + '\u0000' + fmt(item[2]); }
@@ -236,49 +461,87 @@ var COC = (function () {
     return { items: sortByRank(agg, rank), notes: notes };
   }
 
+  function unverifiedLines(unverified) {
+    var lines = [];
+    if (unverified.length) {
+      lines.push('#### The following items could not be verified:');
+      unverified.forEach(function (u) {
+        lines.push('- could not verify ' + u.task + ' pay item ' + u.payItem +
+                   ' (formula quantity in ' + u.source + ')');
+      });
+    }
+    return lines;
+  }
+
   function generateReport(rfcSheet, oldSheet, newSheet) {
     var rank = spiOrder(oldSheet, newSheet).rank;
-    var agg = aggregateRfc(loadRfc(rfcSheet), rank);
+    var rfcFull = loadRfcFull(rfcSheet);
+    var agg = aggregateRfc(rfcFull.items, rank);
     var rfcDump = agg.items;
-    var spiDelta = getSpiDiff(oldSheet, newSheet);
+    var diffFull = spiDiffFull(oldSheet, newSheet);
+    var spiDelta = diffFull.items;
+    var unverified = rfcFull.unverified.concat(diffFull.unverified);
     var lines = [];
 
-    if (rfcDump.length === spiDelta.length && rfcDump.every(function (it) { return contains(spiDelta, it); })) {
+    // An unverified item is accounted for by the unverified section, so
+    // it takes no part in the match: its counterpart on the other side
+    // must not also be reported as missing.
+    var unKeys = {};
+    unverified.forEach(function (u) { unKeys[u.task + '|' + u.payItem] = true; });
+    var rfcCmp = rfcDump.filter(function (it) { return !unKeys[it[0] + '|' + it[1]]; });
+    var spiCmp = spiDelta.filter(function (it) { return !unKeys[it[0] + '|' + it[1]]; });
+
+    var matched = rfcCmp.length === spiCmp.length &&
+      rfcCmp.every(function (it) { return contains(spiCmp, it); });
+
+    if (matched && !unverified.length) {
       lines.push('### Success!!');
       lines.push('#### RFC items were transferred to new SPI');
       agg.notes.forEach(function (n) { lines.push(n); });
-      return { success: true, lines: lines, rfcItems: rfcDump, spiItems: spiDelta };
+      return { success: true, status: 'success', lines: lines, rfcItems: rfcDump, spiItems: spiDelta, unverified: [] };
+    }
+
+    if (matched) {
+      // Every verifiable item transferred, but at least one quantity is
+      // a formula this checker cannot compute. That is not a success:
+      // the checker did not check that item.
+      lines.push('### This rfc package could not be fully verified !');
+      unverifiedLines(unverified).forEach(function (n) { lines.push(n); });
+      agg.notes.forEach(function (n) { lines.push(n); });
+      return { success: false, status: 'unverified', lines: lines, rfcItems: rfcDump, spiItems: spiDelta, unverified: unverified };
     }
 
     lines.push('### This rfc package is incorrect !');
     lines.push('#### The following items need attention:');
     agg.notes.forEach(function (n) { lines.push(n); });
 
-    if (rfcDump.length !== spiDelta.length) {
+    if (rfcCmp.length !== spiCmp.length) {
       lines.push("- number of items in rfc don't match new spi");
-      if (rfcDump.length > spiDelta.length) {
-        lines.push('- rfc contains ' + (rfcDump.length - spiDelta.length) + ' items that arent in the new spi');
+      if (rfcCmp.length > spiCmp.length) {
+        lines.push('- rfc contains ' + (rfcCmp.length - spiCmp.length) + ' items that arent in the new spi');
       }
-      if (rfcDump.length < spiDelta.length) {
-        lines.push('- spi contains ' + (spiDelta.length - rfcDump.length) + ' items that arent in the rfc');
+      if (rfcCmp.length < spiCmp.length) {
+        lines.push('- spi contains ' + (spiCmp.length - rfcCmp.length) + ' items that arent in the rfc');
       }
     }
 
-    rfcDump.forEach(function (it) {
-      if (!contains(spiDelta, it)) {
+    rfcCmp.forEach(function (it) {
+      if (!contains(spiCmp, it)) {
         lines.push('- rfc line item for ' + it[0] + ' pay item ' + it[1] + ', ' + fmt(it[2]) +
                    ' units does not appear in the new spi');
       }
     });
 
-    spiDelta.forEach(function (it) {
-      if (!contains(rfcDump, it)) {
+    spiCmp.forEach(function (it) {
+      if (!contains(rfcCmp, it)) {
         lines.push('- spi line item for ' + it[0] + ' pay item ' + it[1] + ', ' + fmt(it[2]) +
                    ' units does not appear in the rfc');
       }
     });
 
-    return { success: false, lines: lines, rfcItems: rfcDump, spiItems: spiDelta };
+    unverifiedLines(unverified).forEach(function (n) { lines.push(n); });
+
+    return { success: false, status: 'incorrect', lines: lines, rfcItems: rfcDump, spiItems: spiDelta, unverified: unverified };
   }
 
   function requireSheet(wb, name, label) {
